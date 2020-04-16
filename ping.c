@@ -89,6 +89,28 @@ char* rev_lookup ( char* ip ) {
   return rev;
 }
 
+
+/*
+ * Helper function to calculate checksum
+ */
+unsigned short checksum( void* packet, int len ) {
+
+  unsigned short *buf = packet;
+  unsigned short sum = 0;
+
+  for ( ; len > 1 ; len = len - 2 ) {
+    sum += *buf++;
+  }
+
+  if ( len == 1 )
+    sum += *buf;
+
+  sum = ( sum >> 16 ) + (sum & 0xFFFF );
+  sum += (sum >> 16);
+  return ~sum;
+}
+
+
 /*
  * Helper function to run ping loop.
  */
@@ -143,9 +165,44 @@ void ping( int sock, struct sockaddr_in *addr,
     packet.hdr.un.echo.sequence = msg_count++;
     packet.hdr.checksum = checksum(&packet, sizeof(packet));
 
-    // Sleep before recalculating time
+    // Sleep before pinging
     sleep(sleep_time);
 
+    // Send packet
+    clock_gettime( CLOCK_MONOTONIC, &start );
+    ret = sendto ( sock, &packet, sizeof(packet), 0,(struct sockaddr*)addr,
+      sizeof ( *addr ));
+    if ( ret <= 0 ) {
+      printf("Unable to send packet.\n");
+    }
+
+    // Receive packet
+    addr_len = sizeof( r_addr );
+    //ret = recvfrom( sock, &packet, sizeof(packet), 0, (struct sockaddr*)&r_addr,
+      //&addr_len);
+    if ( (recvfrom( sock, &packet, sizeof(packet), 0, (struct sockaddr*)&r_addr,
+      &addr_len)) <= 0 && msg_count > 1 ) {
+      printf("No packet received.\n");
+    } else {
+      clock_gettime(CLOCK_MONOTONIC, &end);
+      double elapsed = ((double)(end.tv_nsec - start.tv_nsec))/1000000.0;
+      rtt_msec = (end.tv_sec - start.tv_sec) * 1000.0 + elapsed;
+
+
+      // if packet was not sent, don't receive.
+      if(sent) {
+        if(!(packet.hdr.type ==69 && packet.hdr.code==0)) {
+          printf("Error..Packet received with ICMP type %d code %d\n",
+                    packet.hdr.type, packet.hdr.code);
+           } else {
+             printf("%d bytes from %s (h: %s) (%s) msg_seq=%d ttl=%d rtt = %Lf ms.\n", pkt_size, rev,
+               hostname, ip, msg_count, ttl, rtt_msec);
+
+            recv_count++;
+
+          }
+       }
+    }
 
 
 
