@@ -1,2 +1,2 @@
-ping: ping.c
-	gcc -o ping ping.c
+myPing: ping.c
+	gcc -o myPing ping.c
