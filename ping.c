@@ -13,13 +13,17 @@
 #include <arpa/inet.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
+
+
+
 
 // Global variables and defines here
 
 #define pkt_size 64
 
 int port_no = 0;  // default port number
-int sleep_time = 1000000;  // Time before pinging again (1s)
+int sleep_time = 1;  // Time before pinging again (1s)
 int timeout = 1;   // timeout to recieve reply in seconds
 bool keepalive = true;  // Keeps the ping loop running
 int ttl = 64; // Default ttl
@@ -28,10 +32,10 @@ int ttl = 64; // Default ttl
  * ICMP packet structure.
  * Required since ICMP does not have a default packet.
  */
-struct pkt {
+typedef struct pkt {
   struct icmphdr hdr;   // ICMP header
   char msg[pkt_size - sizeof(struct icmphdr)];  // message for echo
-};
+} pkt_t;
 
 /*
  * Handler for SIGINT (ctrl-C)
@@ -85,6 +89,71 @@ char* rev_lookup ( char* ip ) {
   return rev;
 }
 
+/*
+ * Helper function to run ping loop.
+ */
+void ping( int sock, struct sockaddr_in *addr,
+  char* rev, char* ip, char *hostname) {
+
+  int i;
+  int addr_len;
+  int msg_count = 0;  // Echo messages sent
+  int recv_count = 0; // replies received
+
+  // Set up packet to be sent
+  pkt_t packet;
+  struct sockaddr_in r_addr;
+
+  // set up timing
+  struct timespec start, end, tfs, tfe; // Hold all time info
+  long double rtt_msec = 0;
+  long double total_msec = 0;
+  struct timeval tv_out;
+  tv_out.tv_sec = timeout;
+  tv_out.tv_usec  = 0;
+
+  clock_gettime(CLOCK_MONOTONIC, &tfs);
+
+  // Set socket ttl
+  int ret = setsockopt(sock, SOL_IP, IP_TTL, &ttl, sizeof(ttl));
+  if ( ret ) {
+    printf("Setting ttl failed1\n");
+  }
+
+  // Set timeout for recv
+  setsockopt( sock, SOL_SOCKET, SO_RCVTIMEO, &tv_out, sizeof(tv_out));
+
+
+  bool sent;
+  // Loop to send socket
+  while ( keepalive ) {
+
+    sent = true;
+
+    // Fill packet
+    bzero( &packet, sizeof( packet ));
+    packet.hdr.type = ICMP_ECHO;
+    packet.hdr.un.echo.id = getpid();
+
+    for ( i = 0 ; i < sizeof ( packet.msg) -1 ; i++ ) {
+      packet.msg[i] = i+'0';  // Convert to ascii
+    }
+    packet.msg[i] = '\0'; //Null terminator
+
+    packet.hdr.un.echo.sequence = msg_count++;
+    packet.hdr.checksum = checksum(&packet, sizeof(packet));
+
+    // Sleep before recalculating time
+    sleep(sleep_time);
+
+
+
+
+  } //while
+
+
+
+}
 
 
 /*
@@ -147,6 +216,9 @@ int main(int argc, char * argv[]) {
 
   // Handle ctrl-C
   signal( SIGINT, handler );
+
+  // Ping loop
+  ping( sock, &addr, rev_hostname, ip, hostname );
 
   return 0;
 }
