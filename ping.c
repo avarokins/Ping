@@ -14,7 +14,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <time.h>
-
+#include <errno.h>
 
 
 
@@ -59,9 +59,10 @@ char* dns_lookup (char* hostname, struct sockaddr_in* addr) {
   } else {
 
     strcpy(ip, inet_ntoa( *(struct in_addr*)host->h_addr ));
-    addr->sin_port = htons(port_no);
-    addr->sin_family = host->h_addrtype;
-    addr->sin_addr.s_addr = *(long*) host->h_addr;
+
+    (*addr).sin_family = host->h_addrtype;
+    (*addr).sin_port = htons (port_no);
+    (*addr).sin_addr.s_addr  = *(long*)host->h_addr;
   }
   return ip;
 }
@@ -96,18 +97,19 @@ char* rev_lookup ( char* ip ) {
 unsigned short checksum( void* packet, int len ) {
 
   unsigned short *buf = packet;
-  unsigned short sum = 0;
+  unsigned short result, sum = 0;
 
-  for ( ; len > 1 ; len = len - 2 ) {
+  for (sum = 0 ; len > 1 ; len -= 2 ) {
     sum += *buf++;
   }
 
   if ( len == 1 )
-    sum += *buf;
+    sum += *(unsigned char*)buf;
 
   sum = ( sum >> 16 ) + (sum & 0xFFFF );
   sum += (sum >> 16);
-  return ~sum;
+  result = ~sum;
+  return result;
 }
 
 
@@ -128,23 +130,24 @@ void ping( int sock, struct sockaddr_in *addr,
 
   // set up timing
   struct timespec start, end, tfs, tfe; // Hold all time info
-  long double rtt_msec = 0;
-  long double total_msec = 0;
+  long double rtt_ms = 0;
+  long double total_ms = 0;
   struct timeval tv_out;
-  tv_out.tv_sec = timeout;
+  tv_out.tv_sec = 1;
   tv_out.tv_usec  = 0;
 
   clock_gettime(CLOCK_MONOTONIC, &tfs);
 
+  int ttlval = ttl;
+
   // Set socket ttl
-  int ret = setsockopt(sock, SOL_IP, IP_TTL, &ttl, sizeof(ttl));
-  if ( ret ) {
-    printf("Setting ttl failed1\n");
+  int ret = setsockopt(sock, SOL_IP, IP_TTL, &ttlval, sizeof(ttlval));
+  if ( ret != 0 ) {
+    printf("Setting ttl failed\n");
   }
 
   // Set timeout for recv
   setsockopt( sock, SOL_SOCKET, SO_RCVTIMEO, &tv_out, sizeof(tv_out));
-
 
   bool sent;
   // Loop to send socket
@@ -157,16 +160,17 @@ void ping( int sock, struct sockaddr_in *addr,
     packet.hdr.type = ICMP_ECHO;
     packet.hdr.un.echo.id = getpid();
 
-    for ( i = 0 ; i < sizeof ( packet.msg) -1 ; i++ ) {
+    for ( i = 0 ; i < sizeof(packet.msg) - 1 ; i++ ) {
       packet.msg[i] = i+'0';  // Convert to ascii
     }
-    packet.msg[i] = '\0'; //Null terminator
+    packet.msg[i] = 0; //Null terminator
 
     packet.hdr.un.echo.sequence = msg_count++;
     packet.hdr.checksum = checksum(&packet, sizeof(packet));
 
     // Sleep before pinging
-    sleep(sleep_time);
+    usleep(1000000);
+    //sleep(sleep_time);
 
     // Send packet
     clock_gettime( CLOCK_MONOTONIC, &start );
@@ -177,36 +181,44 @@ void ping( int sock, struct sockaddr_in *addr,
     }
 
     // Receive packet
-    addr_len = sizeof( r_addr );
-    //ret = recvfrom( sock, &packet, sizeof(packet), 0, (struct sockaddr*)&r_addr,
-      //&addr_len);
-    if ( (recvfrom( sock, &packet, sizeof(packet), 0, (struct sockaddr*)&r_addr,
-      &addr_len)) <= 0 && msg_count > 1 ) {
+    addr_len = sizeof(r_addr);
+    ret = recvfrom( sock, &packet, sizeof(packet), 0, (struct sockaddr*)&r_addr,
+      &addr_len);
+    if ( ret <= 0 && msg_count > 1 ) {
       printf("No packet received.\n");
     } else {
       clock_gettime(CLOCK_MONOTONIC, &end);
       double elapsed = ((double)(end.tv_nsec - start.tv_nsec))/1000000.0;
-      rtt_msec = (end.tv_sec - start.tv_sec) * 1000.0 + elapsed;
-
+      rtt_ms = (end.tv_sec - start.tv_sec) * 1000.0 + elapsed;
 
       // if packet was not sent, don't receive.
       if(sent) {
-        if(!(packet.hdr.type ==69 && packet.hdr.code==0)) {
+        if( packet.hdr.type !=69 || packet.hdr.code!=0) {
           printf("Error..Packet received with ICMP type %d code %d\n",
                     packet.hdr.type, packet.hdr.code);
            } else {
-             printf("%d bytes from %s (h: %s) (%s) msg_seq=%d ttl=%d rtt = %Lf ms.\n", pkt_size, rev,
-               hostname, ip, msg_count, ttl, rtt_msec);
-
+             printf("%d bytes from %s: icmp_seq=%d ttl=%d rtt = %Lf ms.\n",
+              pkt_size, ip, msg_count, ttl, rtt_ms);
             recv_count++;
-
           }
        }
     }
 
-
-
   } //while
+
+  // Find total time
+  clock_gettime(CLOCK_MONOTONIC, &tfe);
+  double elapsed = ((double)(tfe.tv_nsec - tfs.tv_nsec))/1000000.0;
+  total_ms = (tfe.tv_sec-tfs.tv_sec) * 1000.0 + elapsed;
+
+
+
+  // Ending output
+  float packet_loss = (float) ((float)(msg_count - recv_count)/(float)msg_count)*100;
+
+  printf("--- %s ping statistics ---\n",hostname);
+  printf("%d packets transmitted, %d received, %.2f%% packet_loss, time %dms\n\n",msg_count,
+    recv_count,packet_loss, total_ms);
 
 
 
@@ -257,9 +269,6 @@ int main(int argc, char * argv[]) {
 
   // Perform reverse hostname search
   rev_hostname = rev_lookup( ip );
-  if ( rev_hostname == NULL ) {
-    printf("Can not perform reverse lookup of hostname!\n");
-  }
 
   // Header output
   printf("PING %s (%s) - %d bytes of data.\n", hostname, ip, pkt_size);
